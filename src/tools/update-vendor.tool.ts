@@ -9,6 +9,7 @@ const toolSchema = z.object({
     Id: z.string(),
     SyncToken: z.string(),
     DisplayName: z.string(),
+    Active: z.boolean().optional(),
     GivenName: z.string().optional(),
     FamilyName: z.string().optional(),
     CompanyName: z.string().optional(),

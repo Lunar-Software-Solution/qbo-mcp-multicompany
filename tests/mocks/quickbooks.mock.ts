@@ -34,11 +34,10 @@ export const mockQuickBooksInstance = {
   deleteBill: jest.fn(),
   findBills: jest.fn(),
 
-  // Vendor methods
+  // Vendor methods (no deleteVendor: QBO cannot hard-delete vendors)
   createVendor: jest.fn(),
   getVendor: jest.fn(),
   updateVendor: jest.fn(),
-  deleteVendor: jest.fn(),
   findVendors: jest.fn(),
 
   // Employee methods

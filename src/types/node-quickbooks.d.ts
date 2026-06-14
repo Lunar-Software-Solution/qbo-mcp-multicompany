@@ -55,7 +55,8 @@ declare module 'node-quickbooks' {
     }, callback: (err: any, vendors: any) => void): void;
     createVendor(vendor: object, callback: (err: any, vendor: any) => void): void;
     updateVendor(vendor: object, callback: (err: any, vendor: any) => void): void;
-    deleteVendor(vendor: object, callback: (err: any, vendor: any) => void): void;
+    // NOTE: node-quickbooks has no deleteVendor — QuickBooks Online cannot
+    // hard-delete vendors. Deactivate via updateVendor({ Active: false }).
     getVendor(id: string, callback: (err: any, vendor: any) => void): void;
 
     // Employee CRUD

@@ -116,24 +116,64 @@ describe('Vendor Handlers', () => {
   });
 
   describe('deleteQuickbooksVendor', () => {
-    it('should delete a vendor', async () => {
-      const mockDeleted = { Id: '56', status: 'Deleted' };
-      mockQuickBooksInstance.deleteVendor.mockImplementation((_payload: any, cb: any) => cb(null, mockDeleted));
+    // QuickBooks Online cannot hard-delete vendors; "deleting" deactivates them
+    // via updateVendor({ Active: false }).
+    it('should deactivate a vendor via updateVendor when SyncToken is supplied', async () => {
+      const mockUpdated = { Id: '56', Active: false };
+      mockQuickBooksInstance.updateVendor.mockImplementation((payload: any, cb: any) => {
+        expect(payload.Active).toBe(false);
+        cb(null, mockUpdated);
+      });
 
       const result = await deleteQuickbooksVendor({ Id: '56', SyncToken: '0' });
 
       expect(result.isError).toBe(false);
-      expect(result.result).toEqual(mockDeleted);
+      expect(result.result).toEqual(mockUpdated);
+      expect(mockQuickBooksInstance.getVendor).not.toHaveBeenCalled();
+    });
+
+    it('should fetch the vendor first when only an id is supplied', async () => {
+      mockQuickBooksInstance.getVendor.mockImplementation((_id: any, cb: any) =>
+        cb(null, { Id: '56', SyncToken: '3' })
+      );
+      mockQuickBooksInstance.updateVendor.mockImplementation((payload: any, cb: any) => {
+        expect(payload.SyncToken).toBe('3');
+        cb(null, { Id: '56', Active: false });
+      });
+
+      const result = await deleteQuickbooksVendor('56');
+
+      expect(result.isError).toBe(false);
+      expect(mockQuickBooksInstance.getVendor).toHaveBeenCalled();
     });
 
     it('should handle API errors', async () => {
-      mockQuickBooksInstance.deleteVendor.mockImplementation((_payload: any, cb: any) =>
-        cb(new Error('Delete failed'), null)
+      mockQuickBooksInstance.updateVendor.mockImplementation((_payload: any, cb: any) =>
+        cb(new Error('Update failed'), null)
       );
 
       const result = await deleteQuickbooksVendor({ Id: '56', SyncToken: '0' });
 
       expect(result.isError).toBe(true);
+    });
+
+    it('should error when the vendor lookup fails', async () => {
+      mockQuickBooksInstance.getVendor.mockImplementation((_id: any, cb: any) =>
+        cb(new Error('Not found'), null)
+      );
+
+      const result = await deleteQuickbooksVendor('999');
+
+      expect(result.isError).toBe(true);
+    });
+
+    it('should error when the vendor cannot be retrieved for deactivation', async () => {
+      mockQuickBooksInstance.getVendor.mockImplementation((_id: any, cb: any) => cb(null, null));
+
+      const result = await deleteQuickbooksVendor('999');
+
+      expect(result.isError).toBe(true);
+      expect(result.error).toContain('Unable to retrieve vendor');
     });
 
     it('should handle authentication errors', async () => {
