@@ -1,0 +1,30 @@
+services:
+  qbo-mcp:
+    build: .
+    image: qbo-mcp-server
+    restart: unless-stopped
+    env_file: .env.docker
+    environment:
+      MCP_TRANSPORT: "http"
+      PORT: "3000"
+      QBO_DATA_DIR: "/app/data"
+    volumes:
+      - qbo-data:/app/data
+    expose:
+      - "3000" # internal only — reached by cloudflared, not published to the host
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    env_file: .env.docker # provides TUNNEL_TOKEN
+    depends_on:
+      - qbo-mcp
+
+volumes:
+  qbo-data:

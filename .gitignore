@@ -7,7 +7,11 @@ coverage
 .env
 .env.local
 .env.*.local
+.env.docker
 tokens.json
+
+# Per-company token store (Docker volume / local data dir)
+data/
 
 start.cmd
 

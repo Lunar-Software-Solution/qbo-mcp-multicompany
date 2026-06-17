@@ -102,6 +102,27 @@ Set any of the `DISABLE_*` flags to `"true"` to prevent that category of tools f
 
 ---
 
+## Multi-company & remote deployment
+
+The server can also run as a **remote, multi-company HTTP MCP server**. One Intuit app authorizes many QuickBooks companies via built-in OAuth onboarding; each company is reached at `/mcp/<realmId>` and guarded by a shared bearer token. Refresh tokens persist per-company in a data volume.
+
+- Set `MCP_TRANSPORT=http` (or `PORT`) to start the HTTP server instead of stdio.
+- Onboard companies at `GET /connect?token=<MCP_BEARER_TOKEN>` (OAuth); list them at `GET /companies`; health at `GET /health`.
+- App-level env: `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET`, `QBO_ENVIRONMENT`, `PUBLIC_BASE_URL`, `MCP_BEARER_TOKEN` (legacy `QUICKBOOKS_*` names still work for single-company stdio).
+- Ships with a `Dockerfile` and `docker-compose.yml` (with a Cloudflare `cloudflared` named-tunnel sidecar).
+
+**See [DEPLOY.md](DEPLOY.md) for the full Docker + Cloudflare named-tunnel deployment guide.**
+
+Add a connected company to an MCP client:
+
+```bash
+claude mcp add --transport http qbo-<name> \
+  https://<PUBLIC_BASE_URL>/mcp/<realmId> \
+  --header "Authorization: Bearer <MCP_BEARER_TOKEN>"
+```
+
+---
+
 ## Available Tools
 
 ### Entities

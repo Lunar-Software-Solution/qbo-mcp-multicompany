@@ -6,45 +6,41 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import open from 'open';
+import { currentRealmId } from "./company-context.js";
+import { companyStore } from "./company-store.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Resolve .env relative to the installed module (../../.env from dist/clients/).
-// This matters when the MCP server is spawned by a host (e.g. Claude Desktop,
-// Claude Code, Cursor) whose working directory is not the project root —
-// without this, dotenv silently finds nothing and startup fails.
-//
-// Use override: true so that values from .env always win over any empty-string
-// placeholders a host app (e.g. Claude Desktop) may inject via its env config.
-// This prevents the server from starting with blank REFRESH_TOKEN / REALM_ID
-// even when the host config has those keys set to "".
 dotenv.config({ path: path.join(__dirname, '..', '..', '.env'), override: true });
 
-// Register once at module level — registering inside startOAuthFlow() would
-// accumulate duplicate handlers on every OAuth call.
 process.on('uncaughtException', (err) => {
-  console.error('[auth-server] uncaughtException:', err);
+  console.error('[qbo-client] uncaughtException:', err);
 });
 process.on('unhandledRejection', (reason) => {
-  console.error('[auth-server] unhandledRejection:', reason);
+  console.error('[qbo-client] unhandledRejection:', reason);
 });
 
-const client_id = process.env.QUICKBOOKS_CLIENT_ID;
-const client_secret = process.env.QUICKBOOKS_CLIENT_SECRET;
-const refresh_token = process.env.QUICKBOOKS_REFRESH_TOKEN;
-const realm_id = process.env.QUICKBOOKS_REALM_ID;
-const environment = process.env.QUICKBOOKS_ENVIRONMENT || 'sandbox';
-// Fix for Issue #5: Use env var with underscore (QUICKBOOKS_REDIRECT_URI)
-const redirect_uri = process.env.QUICKBOOKS_REDIRECT_URI || 'http://localhost:8000/callback';
+// ── App-level credentials (shared across every company) ──────────────────────
+// One Intuit app authorizes many QuickBooks companies. Prefer the new QBO_*
+// names; fall back to the legacy QUICKBOOKS_* names for backward compatibility.
+const client_id = process.env.QBO_CLIENT_ID || process.env.QUICKBOOKS_CLIENT_ID;
+const client_secret = process.env.QBO_CLIENT_SECRET || process.env.QUICKBOOKS_CLIENT_SECRET;
+const default_environment = process.env.QBO_ENVIRONMENT || process.env.QUICKBOOKS_ENVIRONMENT || 'sandbox';
+const redirect_uri =
+  process.env.QBO_REDIRECT_URI ||
+  process.env.QUICKBOOKS_REDIRECT_URI ||
+  (process.env.PUBLIC_BASE_URL
+    ? `${process.env.PUBLIC_BASE_URL.replace(/\/$/, '')}/oauth/callback`
+    : 'http://localhost:8000/callback');
 
-// Only throw error if client_id or client_secret is missing
-if (!client_id || !client_secret || !redirect_uri) {
-  throw Error("Client ID, Client Secret and Redirect URI must be set in environment variables");
+// The single-company / stdio fallback realm.
+const default_realm = process.env.QBO_DEFAULT_REALM || process.env.QUICKBOOKS_REALM_ID;
+const default_refresh_token = process.env.QBO_REFRESH_TOKEN || process.env.QUICKBOOKS_REFRESH_TOKEN;
+
+if (!client_id || !client_secret) {
+  throw Error("QBO_CLIENT_ID and QBO_CLIENT_SECRET (or legacy QUICKBOOKS_*) must be set in environment variables");
 }
-
-// ── QuickbooksClient ─────────────────────────────────────────────────────────
-// Exported so handlers can call QuickbooksClient.getInstance() directly,
-// which checks token freshness on every invocation rather than only at startup.
 
 export class QuickbooksClient {
   private readonly clientId: string;
@@ -59,18 +55,59 @@ export class QuickbooksClient {
   private isAuthenticating: boolean = false;
   private redirectUri: string;
 
-  // Refresh 5 minutes before actual expiry to avoid edge cases
   private static readonly TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
 
-  // Shared in-flight refresh promise so that concurrent callers all await the
-  // same network request rather than racing to use (and rotate) the refresh
-  // token simultaneously.
   private refreshInFlight?: Promise<{ access_token: string; expires_in: number }>;
-
-  // Shared in-flight authenticate promise. Guards the cold-start path so two
-  // concurrent first callers cannot both pass the freshness check and both
-  // invoke startOAuthFlow() / rebuild the QuickBooks instance.
   private authInFlight?: Promise<QuickBooks>;
+
+  // ── Per-company instance registry ──────────────────────────────────────────
+  // Replaces the old module-level singleton. Each realmId gets its own client
+  // with its own token cache and in-flight-refresh guard.
+  private static registry = new Map<string, QuickbooksClient>();
+
+  /**
+   * Get (or lazily build + cache) the client for a specific company. Credentials
+   * come from the shared Intuit app; the refresh token comes from the company
+   * store, or — for the legacy default realm — from the environment.
+   */
+  static forRealm(realmId: string): QuickbooksClient {
+    const cached = QuickbooksClient.registry.get(realmId);
+    if (cached) return cached;
+
+    const record = companyStore.get(realmId);
+    let refreshToken = record?.refreshToken;
+    let environment = record?.environment || default_environment;
+
+    if (!refreshToken && realmId === default_realm) {
+      // Legacy single-company mode: seed from env.
+      refreshToken = default_refresh_token;
+      environment = default_environment;
+    }
+
+    if (!refreshToken) {
+      throw new Error(`Company ${realmId} is not connected. Authorize it at /connect first.`);
+    }
+
+    const client = new QuickbooksClient({
+      clientId: client_id!,
+      clientSecret: client_secret!,
+      refreshToken,
+      realmId,
+      environment,
+      redirectUri: redirect_uri,
+    });
+    QuickbooksClient.registry.set(realmId, client);
+    return client;
+  }
+
+  /** Resolve the company for the current request: async context, else env default. */
+  private static resolveRealmId(): string {
+    const realmId = currentRealmId() || default_realm;
+    if (!realmId) {
+      throw new Error("No QuickBooks company in context and no default realm (QBO_DEFAULT_REALM) configured.");
+    }
+    return realmId;
+  }
 
   constructor(config: {
     clientId: string;
@@ -108,12 +145,9 @@ export class QuickbooksClient {
     const port = 8000;
 
     return new Promise((resolve, reject) => {
-      // Create temporary server for OAuth callback
       const server = http.createServer(async (req, res) => {
         console.log(`[auth-server] ${req.method} ${req.url}`);
 
-        // Respond to anything that isn't /callback so diagnostic probes (curl,
-        // ngrok health checks, favicon requests, etc.) don't hang the server.
         if (!req.url?.startsWith('/callback')) {
           res.writeHead(404, { 'Content-Type': 'text/plain' });
           res.end('Not Found. Waiting for QuickBooks OAuth callback at /callback');
@@ -125,32 +159,26 @@ export class QuickbooksClient {
             const response = await this.oauthClient.createToken(req.url);
             const tokens = response.token;
 
-            // Save tokens
             this.refreshToken = tokens.refresh_token;
             this.realmId = tokens.realmId;
             this.saveTokensToEnv();
+            // Also seed the company store so the server can serve this company.
+            try {
+              if (this.realmId && this.refreshToken) {
+                companyStore.upsert({ realmId: this.realmId, refreshToken: this.refreshToken, environment: this.environment });
+              }
+            } catch { /* best effort */ }
 
-            // Send success response
             res.writeHead(200, { 'Content-Type': 'text/html' });
             res.end(`
               <html>
-                <body style="
-                  display: flex;
-                  flex-direction: column;
-                  justify-content: center;
-                  align-items: center;
-                  height: 100vh;
-                  margin: 0;
-                  font-family: Arial, sans-serif;
-                  background-color: #f5f5f5;
-                ">
+                <body style="display:flex;flex-direction:column;justify-content:center;align-items:center;height:100vh;margin:0;font-family:Arial, sans-serif;background-color:#f5f5f5;">
                   <h2 style="color: #2E8B57;">✓ Successfully connected to QuickBooks!</h2>
                   <p>You can close this window now.</p>
                 </body>
               </html>
             `);
 
-            // Close server after a short delay
             setTimeout(() => {
               server.close();
               this.isAuthenticating = false;
@@ -159,36 +187,17 @@ export class QuickbooksClient {
           } catch (error) {
             console.error('Error during token creation:', error);
             res.writeHead(500, { 'Content-Type': 'text/html' });
-            res.end(`
-              <html>
-                <body style="
-                  display: flex;
-                  flex-direction: column;
-                  justify-content: center;
-                  align-items: center;
-                  height: 100vh;
-                  margin: 0;
-                  font-family: Arial, sans-serif;
-                  background-color: #fff0f0;
-                ">
-                  <h2 style="color: #d32f2f;">Error connecting to QuickBooks</h2>
-                  <p>Please check the console for more details.</p>
-                </body>
-              </html>
-            `);
+            res.end(`<html><body><h2 style="color:#d32f2f;">Error connecting to QuickBooks</h2><p>Check the console for details.</p></body></html>`);
             this.isAuthenticating = false;
             reject(error);
           }
         }
       });
 
-      // Start server — bind to all interfaces (IPv4 + IPv6) so ngrok can reach it
-      // regardless of whether it resolves `localhost` to 127.0.0.1 or ::1
       server.listen(port, '::', async () => {
         const addr = server.address();
         console.log(`[auth-server] Listening on ${typeof addr === 'string' ? addr : `${addr?.address}:${addr?.port}`} (family: ${typeof addr === 'object' ? addr?.family : 'n/a'})`);
 
-        // Generate authorization URL with proper type assertion
         const authUri = this.oauthClient.authorizeUri({
           scope: [OAuthClient.scopes.Accounting as string],
           state: 'testState'
@@ -199,7 +208,6 @@ export class QuickbooksClient {
         console.log(authUri);
         console.log('\nWaiting for callback...\n');
 
-        // Attempt to open the browser automatically; ignore failures on headless systems
         try {
           await open(authUri);
         } catch {
@@ -207,7 +215,6 @@ export class QuickbooksClient {
         }
       });
 
-      // Handle server errors
       server.on('error', (error) => {
         console.error('Server error:', error);
         this.isAuthenticating = false;
@@ -233,9 +240,6 @@ export class QuickbooksClient {
     if (this.refreshToken) updateEnvVar('QUICKBOOKS_REFRESH_TOKEN', this.refreshToken);
     if (this.realmId) updateEnvVar('QUICKBOOKS_REALM_ID', this.realmId);
 
-    // Atomic write: write to a sibling temp file, then rename. On POSIX rename
-    // is atomic within the same filesystem, so a crash mid-write cannot leave
-    // .env half-written or empty.
     const tmpPath = `${tokenPath}.tmp.${process.pid}`;
     try {
       fs.writeFileSync(tmpPath, envLines.join('\n'), { mode: 0o600 });
@@ -249,8 +253,6 @@ export class QuickbooksClient {
   async refreshAccessToken() {
     if (!this.refreshToken) {
       await this.startOAuthFlow();
-
-      // Verify we have a refresh token after OAuth flow
       if (!this.refreshToken) {
         throw new Error('Failed to obtain refresh token from OAuth flow');
       }
@@ -262,12 +264,8 @@ export class QuickbooksClient {
 
     this.refreshInFlight = (async () => {
       try {
-        // At this point we know refreshToken is not undefined
         const authResponse = await this.oauthClient.refreshUsingToken(this.refreshToken!);
 
-        // The intuit-oauth type declarations are incomplete — the runtime
-        // token object also contains refresh_token, x_refresh_token_expires_in,
-        // token_type, realmId, etc. Widen the type to reach those fields.
         const token = authResponse.token as unknown as {
           access_token: string;
           expires_in?: number;
@@ -280,28 +278,22 @@ export class QuickbooksClient {
         const expiresIn = token.expires_in || 3600;
         this.accessTokenExpiry = new Date(Date.now() + expiresIn * 1000);
 
-        // Intuit rotates the refresh token (typically every ~24h). When a new
-        // one is issued we MUST persist it — the old value in .env becomes
-        // stale and will eventually stop working, silently breaking refresh.
+        // Intuit rotates the refresh token (~every 24h). Persist it per-company.
         const newRefreshToken = token.refresh_token;
         if (newRefreshToken && newRefreshToken !== this.refreshToken) {
           this.refreshToken = newRefreshToken;
           try {
-            this.saveTokensToEnv();
-            console.error('[qbo-client] Refresh token rotated and persisted to .env');
+            if (this.realmId) companyStore.setRefreshToken(this.realmId, this.refreshToken);
+            console.error('[qbo-client] Refresh token rotated and persisted to company store');
           } catch (persistErr) {
-            // Don't fail the whole refresh just because we couldn't write to
-            // disk; the in-memory token is still valid for this process.
             console.error('[qbo-client] Failed to persist rotated refresh token:', persistErr);
           }
         }
 
-        // Surface the refresh token's own remaining lifetime for observability.
-        // Intuit's refresh tokens last 100 days; warn when under 14 days.
         const refreshExpiresIn = token.x_refresh_token_expires_in;
         if (typeof refreshExpiresIn === 'number' && refreshExpiresIn < 14 * 24 * 3600) {
           const days = Math.round(refreshExpiresIn / 86400);
-          console.error(`[qbo-client] WARNING: refresh token expires in ~${days} day(s). Re-run \`npm run auth\` before it expires.`);
+          console.error(`[qbo-client] WARNING: refresh token for realm ${this.realmId} expires in ~${days} day(s). Re-authorize before it expires.`);
         }
 
         return {
@@ -328,29 +320,25 @@ export class QuickbooksClient {
       try {
         if (!this.refreshToken || !this.realmId) {
           await this.startOAuthFlow();
-
-          // Verify we have both tokens after OAuth flow
           if (!this.refreshToken || !this.realmId) {
             throw new Error('Failed to obtain required tokens from OAuth flow');
           }
         }
 
-        // Silently refresh if token is expired or expiring soon
         if (this.isTokenExpiredOrExpiringSoon()) {
           await this.refreshAccessToken();
         }
 
-        // Always rebuild with the current fresh access token
         this.quickbooksInstance = new QuickBooks(
           this.clientId,
           this.clientSecret,
           this.accessToken!,
-          false, // no token secret for OAuth 2.0
+          false,
           this.realmId!,
           this.environment === 'sandbox',
-          false, // debug?
-          null,  // minor version
-          '2.0', // oauth version
+          false,
+          null,
+          '2.0',
           this.refreshToken
         );
 
@@ -363,34 +351,30 @@ export class QuickbooksClient {
     return this.authInFlight;
   }
 
-  // ── Called by every handler on every request ─────────────────────────────
-  // Checks token freshness on each invocation so handlers stay functional
-  // across 60-minute token boundaries without server restarts.
+  // ── Called by every handler on every request — now company-aware ────────────
   static async getInstance(): Promise<QuickBooks> {
-    if (quickbooksClient.isTokenExpiredOrExpiringSoon()) {
-      await quickbooksClient.authenticate();
+    const client = QuickbooksClient.forRealm(QuickbooksClient.resolveRealmId());
+    if (client.isTokenExpiredOrExpiringSoon()) {
+      await client.authenticate();
     }
-    if (!quickbooksClient.quickbooksInstance) {
-      await quickbooksClient.authenticate();
+    if (!client.quickbooksInstance) {
+      await client.authenticate();
     }
-    return quickbooksClient.quickbooksInstance!;
+    return client.quickbooksInstance!;
   }
 
-  // Static counterpart to getInstance() — returns raw OAuth credentials for
-  // handlers that need to call QBO endpoints not wrapped by node-quickbooks
-  // (e.g. POST /upload for binary attachments). Ensures token freshness on
-  // every invocation, same as getInstance().
   static async getAuthCredentials(): Promise<{ accessToken: string; realmId: string; isSandbox: boolean }> {
-    if (quickbooksClient.isTokenExpiredOrExpiringSoon() || !quickbooksClient.accessToken) {
-      await quickbooksClient.authenticate();
+    const client = QuickbooksClient.forRealm(QuickbooksClient.resolveRealmId());
+    if (client.isTokenExpiredOrExpiringSoon() || !client.accessToken) {
+      await client.authenticate();
     }
-    if (!quickbooksClient.accessToken || !quickbooksClient.realmId) {
+    if (!client.accessToken || !client.realmId) {
       throw new Error('Quickbooks not authenticated');
     }
     return {
-      accessToken: quickbooksClient.accessToken,
-      realmId: quickbooksClient.realmId,
-      isSandbox: quickbooksClient.environment === 'sandbox',
+      accessToken: client.accessToken,
+      realmId: client.realmId,
+      isSandbox: client.environment === 'sandbox',
     };
   }
 
@@ -402,11 +386,14 @@ export class QuickbooksClient {
   }
 }
 
+// Backward-compat default instance for the local `npm run auth` flow
+// (src/auth-server.ts). In multi-company HTTP mode this instance is unused —
+// onboarding goes through the company store instead.
 export const quickbooksClient = new QuickbooksClient({
   clientId: client_id,
   clientSecret: client_secret,
-  refreshToken: refresh_token,
-  realmId: realm_id,
-  environment: environment,
+  refreshToken: default_refresh_token,
+  realmId: default_realm,
+  environment: default_environment,
   redirectUri: redirect_uri,
 });
