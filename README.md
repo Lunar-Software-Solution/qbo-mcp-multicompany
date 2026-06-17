@@ -111,6 +111,10 @@ The server can also run as a **remote, multi-company HTTP MCP server**. One Intu
 - App-level env: `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET`, `QBO_ENVIRONMENT`, `PUBLIC_BASE_URL`, `MCP_BEARER_TOKEN` (legacy `QUICKBOOKS_*` names still work for single-company stdio).
 - Ships with a `Dockerfile` and `docker-compose.yml` (with a Cloudflare `cloudflared` named-tunnel sidecar).
 
+**Two ways to target a company:**
+- **Per-connection** — connect to `/mcp/<realmId>`; every call uses that company. (Strong isolation, natural per-company auth; N companies = N × tools in the client.)
+- **Single connection** — connect to `/mcp` (no realm) and pass an optional `company` (realm ID) **argument on each tool call**. One connection serves every company with a constant ~140 tools. The `company` field is injected centrally in `RegisterTool`, so no handler needs it; if omitted, the connection's default company is used.
+
 **See [DEPLOY.md](DEPLOY.md) for the full Docker + Cloudflare named-tunnel deployment guide.**
 
 Add a connected company to an MCP client:

@@ -6,7 +6,7 @@ import {
 } from "../../../src/helpers/register-tool";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import type { ToolDefinition } from "../../../src/types/tool-definition";
+import { currentRealmId } from "../../../src/clients/company-context";
 
 // ── getCrudCategory ──────────────────────────────────────────────────────────
 // Verifies that every verb prefix maps to the correct CRUD category string.
@@ -85,17 +85,46 @@ describe("RegisterTool", () => {
   });
 
   const schema = z.object({ id: z.string() });
-  const handler = jest.fn() as ToolDefinition<typeof schema>["handler"];
-  const def = (name: string): ToolDefinition<typeof schema> =>
-    ({ name, description: `desc:${name}`, schema, handler });
+  const handler = jest.fn() as any;
+  // Return `any` so TS never expands the MCP ToolCallback type (TS2589 deep-instantiation).
+  const def = (name: string, h: any = handler): any =>
+    ({ name, description: `desc:${name}`, schema, handler: h });
 
-  // Confirm all four ToolDefinition fields are forwarded to server.tool() unchanged.
-  it("calls server.tool() with all definition fields when enabled", () => {
+  // Registers with name/description, the original schema under `params`, an
+  // injected optional `company` field, and a wrapper around the handler.
+  it("registers with params + injected optional company and a wrapped handler", () => {
     const server = { tool: jest.fn() } as unknown as McpServer;
     const d = def("get_invoice");
     RegisterTool(server, d);
     expect(server.tool).toHaveBeenCalledTimes(1);
-    expect(server.tool).toHaveBeenCalledWith(d.name, d.description, { params: d.schema }, d.handler);
+    const [name, description, shape, fn] = (server.tool as jest.Mock).mock.calls[0] as any[];
+    expect(name).toBe(d.name);
+    expect(description).toBe(d.description);
+    expect(shape.params).toBe(d.schema);
+    expect(shape.company).toBeDefined();
+    expect(typeof fn).toBe("function");
+    expect(fn).not.toBe(d.handler); // it's the wrapper, not the raw handler
+  });
+
+  // Wrapper passes through to the handler when no company is supplied.
+  it("wrapper invokes the handler directly when no company arg", async () => {
+    const server = { tool: jest.fn() } as unknown as McpServer;
+    const h = jest.fn(async () => ({ content: [] })) as any;
+    RegisterTool(server, def("get_invoice", h));
+    const fn = (server.tool as jest.Mock).mock.calls[0][3] as any;
+    await fn({ params: { id: "1" } }, {});
+    expect(h).toHaveBeenCalledTimes(1);
+  });
+
+  // Wrapper runs the handler inside the requested company's async context.
+  it("wrapper binds the company context when company arg is provided", async () => {
+    const server = { tool: jest.fn() } as unknown as McpServer;
+    let seen: string | undefined;
+    const h = jest.fn(async () => { seen = currentRealmId(); return { content: [] }; }) as any;
+    RegisterTool(server, def("get_invoice", h));
+    const fn = (server.tool as jest.Mock).mock.calls[0][3] as any;
+    await fn({ params: { id: "1" }, company: "REALM123" }, {});
+    expect(seen).toBe("REALM123");
   });
 
   // One test per mutable category to confirm the early-return path is reached.

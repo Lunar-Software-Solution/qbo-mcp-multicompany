@@ -321,5 +321,44 @@ export function createHttpApp() {
   app.get("/mcp/:realmId", requireBearer, sessionRequestHandler);
   app.delete("/mcp/:realmId", requireBearer, sessionRequestHandler);
 
+  // ── Single-connection endpoint (Option A) ───────────────────────────────────
+  // One connection serves every company; each tool call carries its own optional
+  // `company` (realm ID), bound to the async context by RegisterTool's wrapper.
+  // No realm in the URL, so no route-level company binding here.
+  app.post("/mcp", requireBearer, async (req, res) => {
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    let transport = sessionId ? transports[sessionId] : undefined;
+    if (!transport) {
+      if (sessionId || !isInitializeRequest(req.body)) {
+        res.status(400).json({
+          jsonrpc: "2.0",
+          error: { code: -32000, message: "Bad Request: no valid session ID for a non-initialize request." },
+          id: null,
+        });
+        return;
+      }
+      transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (sid) => { transports[sid] = transport!; },
+      });
+      transport.onclose = () => { if (transport!.sessionId) delete transports[transport!.sessionId]; };
+      const server = createQuickbooksMcpServer();
+      await server.connect(transport);
+    }
+    await transport.handleRequest(req, res, req.body);
+  });
+
+  const genericSession = async (req: Request, res: Response) => {
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    const transport = sessionId ? transports[sessionId] : undefined;
+    if (!transport) {
+      res.status(400).send("Invalid or missing session ID");
+      return;
+    }
+    await transport.handleRequest(req, res);
+  };
+  app.get("/mcp", requireBearer, genericSession);
+  app.delete("/mcp", requireBearer, genericSession);
+
   return app;
 }

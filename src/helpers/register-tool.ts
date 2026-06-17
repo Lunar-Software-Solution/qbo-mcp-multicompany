@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ToolDefinition } from "../types/tool-definition.js";
 import { z } from "zod";
+import { runWithCompany } from "../clients/company-context.js";
 
 /**
  * Defines CRUD categories for tools
@@ -69,10 +70,30 @@ export function RegisterTool<T extends z.ZodType<any, any>>(
   toolDefinition: ToolDefinition<T>
 ) {
   if (isToolDisabled(toolDefinition.name)) return;
+
+  const handler = toolDefinition.handler as (args: any, extra: any) => any;
+
+  // Inject an optional `company` (realm ID) into every tool so a single MCP
+  // connection can target any connected company per call — without editing any
+  // handler. When provided, run the handler inside that company's async context;
+  // otherwise fall back to the connection's default company.
+  const wrapped = (args: any, extra: any) => {
+    const company = args.company == null ? undefined : String(args.company);
+    return company ? runWithCompany(company, () => handler(args, extra)) : handler(args, extra);
+  };
+
   server.tool(
     toolDefinition.name,
     toolDefinition.description,
-    { params: toolDefinition.schema },
-    toolDefinition.handler
+    {
+      params: toolDefinition.schema,
+      company: z
+        .string()
+        .optional()
+        .describe(
+          "Target QuickBooks company as its realm ID (e.g. 9130357025120146). Optional — if omitted, the connection's default company is used."
+        ),
+    } as any,
+    wrapped as any
   );
 }
