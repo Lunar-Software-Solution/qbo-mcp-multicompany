@@ -13,6 +13,9 @@ tokens.json
 # Per-company token store (Docker volume / local data dir)
 data/
 
+# Local-only compose override (publishes ports for local runs)
+docker-compose.override.yml
+
 start.cmd
 
 # Local capture output (may contain real account balances)

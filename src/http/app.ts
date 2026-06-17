@@ -7,6 +7,7 @@ import { createQuickbooksMcpServer } from "../server/build-server.js";
 import { runWithCompany } from "../clients/company-context.js";
 import { companyStore } from "../clients/company-store.js";
 import { QuickbooksClient } from "../clients/quickbooks-client.js";
+import { getQuickbooksCompanyInfo } from "../handlers/get-quickbooks-company-info.handler.js";
 import { ADMIN_HTML } from "./admin-page.js";
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -126,6 +127,80 @@ export function createHttpApp() {
       });
     } catch (err) {
       res.json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // ── Rich company details (read-only): CompanyInfo + home currency ────────────
+  app.get("/companies/:realmId/info", requireBearer, async (req, res) => {
+    const realmId = String(req.params.realmId);
+    if (!isKnownCompany(realmId)) {
+      res.status(404).json({ health: "error", error: "Company is not connected." });
+      return;
+    }
+    try {
+      const payload = await runWithCompany(realmId, async () => {
+        const infoResp = await getQuickbooksCompanyInfo(realmId);
+        if (infoResp.isError || !infoResp.result) {
+          throw new Error(infoResp.error || "Failed to load company info");
+        }
+        const ci: any = infoResp.result;
+
+        // Home currency comes from Preferences (no handler for it) — raw API call,
+        // same pattern as the attachable upload handler.
+        let currency: string | undefined;
+        let multiCurrency: boolean | undefined;
+        try {
+          const creds = await QuickbooksClient.getAuthCredentials();
+          const base = creds.isSandbox
+            ? "https://sandbox-quickbooks.api.intuit.com"
+            : "https://quickbooks.api.intuit.com";
+          const pr = await fetch(`${base}/v3/company/${realmId}/preferences?minorversion=65`, {
+            headers: { Authorization: `Bearer ${creds.accessToken}`, Accept: "application/json" },
+          });
+          if (pr.ok) {
+            const pj: any = await pr.json();
+            const prefs = pj.Preferences || pj;
+            currency = prefs?.CurrencyPrefs?.HomeCurrency?.value;
+            multiCurrency = prefs?.CurrencyPrefs?.MultiCurrencyEnabled;
+          }
+        } catch { /* currency is best-effort */ }
+
+        const nv: Record<string, string> = {};
+        (ci.NameValue || []).forEach((p: any) => { if (p?.Name) nv[p.Name] = p.Value; });
+        const addr = ci.CompanyAddr || ci.LegalAddr || {};
+
+        return {
+          realmId,
+          environment: companyStore.get(realmId)?.environment || ENVIRONMENT,
+          health: "ok",
+          companyName: ci.CompanyName,
+          legalName: ci.LegalName,
+          address: {
+            line1: addr.Line1,
+            city: addr.City,
+            region: addr.CountrySubDivisionCode,
+            postalCode: addr.PostalCode,
+            country: addr.Country,
+          },
+          country: ci.Country,
+          email: ci.Email?.Address,
+          phone: ci.PrimaryPhone?.FreeFormNumber,
+          webAddr: ci.WebAddr?.URI,
+          fiscalYearStartMonth: ci.FiscalYearStartMonth,
+          currency,
+          multiCurrency,
+          subscriptionStatus: nv.SubscriptionStatus,
+          offeringSku: nv.OfferingSku,
+          industry: nv.QBOIndustryType || nv.IndustryType,
+        };
+      });
+
+      if (payload.companyName) {
+        try { companyStore.setDisplayName(realmId, payload.companyName); } catch { /* best effort */ }
+      }
+      res.json(payload);
+    } catch (err) {
+      res.json({ health: "error", error: err instanceof Error ? err.message : String(err) });
     }
   });
 
