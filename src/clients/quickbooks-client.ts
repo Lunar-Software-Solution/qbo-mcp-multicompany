@@ -100,6 +100,11 @@ export class QuickbooksClient {
     return client;
   }
 
+  /** Drop a company's cached client (e.g. after disconnect), forcing a rebuild. */
+  static forget(realmId: string): void {
+    QuickbooksClient.registry.delete(realmId);
+  }
+
   /** Resolve the company for the current request: async context, else env default. */
   private static resolveRealmId(): string {
     const realmId = currentRealmId() || default_realm;

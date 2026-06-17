@@ -6,6 +6,8 @@ import OAuthClient from "intuit-oauth";
 import { createQuickbooksMcpServer } from "../server/build-server.js";
 import { runWithCompany } from "../clients/company-context.js";
 import { companyStore } from "../clients/company-store.js";
+import { QuickbooksClient } from "../clients/quickbooks-client.js";
+import { ADMIN_HTML } from "./admin-page.js";
 
 // ── Config ───────────────────────────────────────────────────────────────────
 const CLIENT_ID = process.env.QBO_CLIENT_ID || process.env.QUICKBOOKS_CLIENT_ID || "";
@@ -61,6 +63,11 @@ export function createHttpApp() {
     res.json({ status: "ok", companies: companyStore.list().length });
   });
 
+  // ── Admin dashboard (static shell; all data calls are bearer-gated) ──────────
+  app.get("/admin", (_req, res) => {
+    res.type("html").send(ADMIN_HTML);
+  });
+
   // ── List connected companies (admin) ─────────────────────────────────────────
   app.get("/companies", requireBearer, (_req, res) => {
     const list = companyStore.list().map((c) => ({
@@ -68,9 +75,58 @@ export function createHttpApp() {
       environment: c.environment,
       displayName: c.displayName,
       connectedAt: c.connectedAt,
+      source: "store",
       mcpUrl: `${PUBLIC_BASE_URL || ""}/mcp/${c.realmId}`,
     }));
+    // Surface the legacy env-default company (single-company mode) if configured
+    // and not already onboarded into the store.
+    if (DEFAULT_REALM && !companyStore.get(DEFAULT_REALM)) {
+      list.push({
+        realmId: DEFAULT_REALM,
+        environment: ENVIRONMENT,
+        displayName: undefined,
+        connectedAt: undefined,
+        source: "env",
+        mcpUrl: `${PUBLIC_BASE_URL || ""}/mcp/${DEFAULT_REALM}`,
+      });
+    }
     res.json({ companies: list });
+  });
+
+  // ── Disconnect a company ─────────────────────────────────────────────────────
+  app.delete("/companies/:realmId", requireBearer, (req, res) => {
+    const realmId = String(req.params.realmId);
+    const removed = companyStore.remove(realmId);
+    QuickbooksClient.forget(realmId);
+    res.json({ ok: removed });
+  });
+
+  // ── Health check: force a token refresh + a live QBO ping ────────────────────
+  app.get("/companies/:realmId/health", requireBearer, async (req, res) => {
+    const realmId = String(req.params.realmId);
+    if (!isKnownCompany(realmId)) {
+      res.status(404).json({ ok: false, error: "Company is not connected." });
+      return;
+    }
+    try {
+      const info: any = await runWithCompany(realmId, async () => {
+        const qbo = await QuickbooksClient.getInstance(); // refreshes the access token if needed
+        return await new Promise((resolve, reject) =>
+          (qbo as any).getCompanyInfo(realmId, (e: any, c: any) => (e ? reject(e) : resolve(c)))
+        );
+      });
+      const companyName = info?.CompanyName;
+      if (companyName) {
+        try { companyStore.setDisplayName(realmId, companyName); } catch { /* best effort */ }
+      }
+      res.json({
+        ok: true,
+        companyName,
+        environment: companyStore.get(realmId)?.environment || ENVIRONMENT,
+      });
+    } catch (err) {
+      res.json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   // ── OAuth onboarding: start ───────────────────────────────────────────────────

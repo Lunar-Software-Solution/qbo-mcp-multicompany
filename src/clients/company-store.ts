@@ -78,4 +78,23 @@ export const companyStore = {
     existing.updatedAt = new Date().toISOString();
     writeAll(all);
   },
+
+  /** Cache the company's display name (captured during a health check). */
+  setDisplayName(realmId: string, displayName: string): void {
+    const all = readAll();
+    const existing = all[realmId];
+    if (!existing) return;
+    existing.displayName = displayName;
+    existing.updatedAt = new Date().toISOString();
+    writeAll(all);
+  },
+
+  /** Remove a company (disconnect). Returns true if it existed. */
+  remove(realmId: string): boolean {
+    const all = readAll();
+    if (!all[realmId]) return false;
+    delete all[realmId];
+    writeAll(all);
+    return true;
+  },
 };
