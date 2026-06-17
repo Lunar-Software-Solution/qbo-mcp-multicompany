@@ -264,6 +264,7 @@ export function createHttpApp() {
           <p>Add this company to your MCP client as:</p>
           <pre style="background:#f5f5f5;padding:12px;border-radius:6px;">${mcpUrl}</pre>
           <p>Send the header <code>Authorization: Bearer &lt;your token&gt;</code>.</p>
+          <p style="margin-top:28px;"><a href="/admin" style="display:inline-block;background:#2563eb;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;">← Back to admin</a></p>
         </body></html>
       `);
     } catch (err) {
