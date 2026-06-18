@@ -91,7 +91,7 @@ export function RegisterTool<T extends z.ZodType<any, any>>(
         .string()
         .optional()
         .describe(
-          "Target QuickBooks company as its realm ID (e.g. 9130357025120146). Optional — if omitted, the connection's default company is used."
+          "Target QuickBooks company as its realm ID (e.g. 1234567890123456). Optional — if omitted, the connection's default company is used."
         ),
     } as any,
     wrapped as any

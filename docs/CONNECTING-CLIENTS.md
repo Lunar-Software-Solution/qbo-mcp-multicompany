@@ -6,7 +6,7 @@ This server is a **remote, multi-company** QuickBooks Online MCP server, exposed
 
 | Value | Where to get it |
 |---|---|
-| **Base URL** | your tunnel host, e.g. `https://qbo.dezznuts.me` |
+| **Base URL** | your tunnel host, e.g. `https://qbo.example.com` |
 | **`MCP_BEARER_TOKEN`** | from `.env.docker` (the admin token you paste into `/admin`) |
 | **`CF-Access-Client-Id`** | the Cloudflare Access **service token** ID |
 | **`CF-Access-Client-Secret`** | the Cloudflare Access service token secret |
@@ -146,7 +146,7 @@ npx -y mcp-remote https://<HOST>/mcp \
 
 ## Using the tools
 
-- **Pick a company per call** (single-connection mode): pass `company: "<realmId>"` in the tool arguments. Example: `get_company_info` with `{ "company": "9130357025120146" }`.
+- **Pick a company per call** (single-connection mode): pass `company: "<realmId>"` in the tool arguments. Example: `get_company_info` with `{ "company": "1234567890123456" }`.
 - Omit `company` to use the connection's default company.
 - Per-company connections (`/mcp/<realmId>`) ignore the `company` arg — they're already bound.
 
