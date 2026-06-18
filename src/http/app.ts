@@ -59,12 +59,33 @@ export function createHttpApp() {
     next();
   }
 
+  // Auth for the /mcp endpoints. Accepts EITHER:
+  //  (a) a Cloudflare Access assertion — the request already passed Access at the
+  //      edge (Managed OAuth for browser/OAuth clients, or a service-token policy);
+  //      the origin is only reachable through the tunnel, so its presence is trusted.
+  //  (b) a valid bearer token — back-compat for clients that send it directly
+  //      (service-token + bearer, or the mcp-remote bridge).
+  function requireMcpAuth(req: Request, res: Response, next: NextFunction) {
+    if (req.headers["cf-access-jwt-assertion"]) {
+      next();
+      return;
+    }
+    const header = req.headers.authorization || "";
+    const token = header.startsWith("Bearer ") ? header.slice(7) : "";
+    if (BEARER_TOKEN && token && safeEqual(token, BEARER_TOKEN)) {
+      next();
+      return;
+    }
+    res.status(401).json({ error: "Unauthorized" });
+  }
+
   // ── Health ─────────────────────────────────────────────────────────────────
   app.get("/health", (_req, res) => {
     res.json({ status: "ok", companies: companyStore.list().length });
   });
 
   // ── Admin dashboard (static shell; all data calls are bearer-gated) ──────────
+  app.get("/", (_req, res) => res.redirect("/admin"));
   app.get("/admin", (_req, res) => {
     res.type("html").send(ADMIN_HTML);
   });
@@ -274,7 +295,7 @@ export function createHttpApp() {
   });
 
   // ── MCP endpoint, scoped to a company by route param ─────────────────────────
-  app.post("/mcp/:realmId", requireBearer, async (req, res) => {
+  app.post("/mcp/:realmId", requireMcpAuth, async (req, res) => {
     const realmId = String(req.params.realmId);
     if (!isKnownCompany(realmId)) {
       res.status(404).json({ error: `Company ${realmId} is not connected. Visit /connect to authorize it.` });
@@ -318,14 +339,14 @@ export function createHttpApp() {
     }
     await runWithCompany(realmId, () => transport.handleRequest(req, res));
   };
-  app.get("/mcp/:realmId", requireBearer, sessionRequestHandler);
-  app.delete("/mcp/:realmId", requireBearer, sessionRequestHandler);
+  app.get("/mcp/:realmId", requireMcpAuth, sessionRequestHandler);
+  app.delete("/mcp/:realmId", requireMcpAuth, sessionRequestHandler);
 
   // ── Single-connection endpoint (Option A) ───────────────────────────────────
   // One connection serves every company; each tool call carries its own optional
   // `company` (realm ID), bound to the async context by RegisterTool's wrapper.
   // No realm in the URL, so no route-level company binding here.
-  app.post("/mcp", requireBearer, async (req, res) => {
+  app.post("/mcp", requireMcpAuth, async (req, res) => {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
     let transport = sessionId ? transports[sessionId] : undefined;
     if (!transport) {
@@ -357,8 +378,8 @@ export function createHttpApp() {
     }
     await transport.handleRequest(req, res);
   };
-  app.get("/mcp", requireBearer, genericSession);
-  app.delete("/mcp", requireBearer, genericSession);
+  app.get("/mcp", requireMcpAuth, genericSession);
+  app.delete("/mcp", requireMcpAuth, genericSession);
 
   return app;
 }

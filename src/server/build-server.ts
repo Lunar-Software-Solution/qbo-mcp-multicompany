@@ -145,6 +145,7 @@ import { SearchTaxAgenciesTool } from "../tools/search-tax-agencies.tool.js";
 
 import { GetCompanyInfoTool } from "../tools/get-company-info.tool.js";
 import { UpdateCompanyInfoTool } from "../tools/update-company-info.tool.js";
+import { ListCompaniesTool } from "../tools/list-companies.tool.js";
 
 import { CreateAttachableTool } from "../tools/create-attachable.tool.js";
 import { GetAttachableTool } from "../tools/get-attachable.tool.js";
@@ -325,6 +326,8 @@ export function createQuickbooksMcpServer(): McpServer {
   RegisterTool(server, SearchTaxRatesTool);
   RegisterTool(server, GetTaxAgencyTool);
   RegisterTool(server, SearchTaxAgenciesTool);
+  // Company discovery (which companies this server can act on)
+  RegisterTool(server, ListCompaniesTool);
   // Company info
   RegisterTool(server, GetCompanyInfoTool);
   RegisterTool(server, UpdateCompanyInfoTool);

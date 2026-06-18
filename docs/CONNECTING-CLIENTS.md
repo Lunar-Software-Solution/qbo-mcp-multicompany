@@ -122,14 +122,18 @@ args = [
 
 > Codex's MCP config keys evolve — if `[mcp_servers.*]` differs in your version, check `codex --help` / current docs; the bridge command itself is the same.
 
-## Claude.ai / Cowork (web custom connectors)
+## Claude Desktop / claude.ai (OAuth custom connector)
 
-Settings → **Connectors → Add custom connector** → enter `https://<HOST>/mcp`.
+Connector UIs authenticate via **OAuth** (they can't send static headers). For this, the deployment exposes a separate **Managed-OAuth hostname** (a Cloudflare Access app with Managed OAuth enabled — e.g. `https://qbo-mcp.example.com/mcp`). Adding it is one click, **no headers**:
 
-⚠️ **Limitation:** the claude.ai custom-connector UI authenticates via **OAuth** and does **not** let you send static headers — so it can't supply the `CF-Access-Client-*` service-token headers this server requires. Options:
-- Use a header-capable client (Claude Code / Cursor / VS Code), **or**
-- Front the server with a **Cloudflare Access OAuth/SSO** policy instead of a service token for that path (so the browser-based OAuth flow handles auth), **or**
-- Expose an OAuth-enabled MCP variant. Until then, claude.ai web/Cowork won't connect with the service-token model.
+1. Settings → **Connectors → Add custom connector**.
+2. Enter the **OAuth MCP URL**, e.g. `https://qbo-mcp.example.com/mcp`.
+3. Save → a browser window opens to the **Cloudflare Access login** (your IdP / Google) → approve.
+4. Claude self-registers via **Dynamic Client Registration** and connects; tools load.
+
+No `CF-Access-Client-*` or bearer headers needed — Cloudflare Access runs the OAuth at the edge (the endpoint returns `401` with `WWW-Authenticate: … resource_metadata=…` pointing Claude at Access's OAuth discovery).
+
+> **Two endpoints:** use the **OAuth hostname** (`qbo-mcp.…`) for connector UIs (Claude Desktop / claude.ai); header-capable clients (Claude Code, Cursor, VS Code) and machine clients use the **service-token hostname/path** (`<HOST>/mcp`) with the headers above. Both hit the same server/companies.
 
 ## Generic stdio fallback (any MCP client)
 
@@ -146,6 +150,7 @@ npx -y mcp-remote https://<HOST>/mcp \
 
 ## Using the tools
 
+- **Discover companies:** call **`list_companies`** (no args) to get the connected `realmId`s + names this server can act on.
 - **Pick a company per call** (single-connection mode): pass `company: "<realmId>"` in the tool arguments. Example: `get_company_info` with `{ "company": "1234567890123456" }`.
 - Omit `company` to use the connection's default company.
 - Per-company connections (`/mcp/<realmId>`) ignore the `company` arg — they're already bound.

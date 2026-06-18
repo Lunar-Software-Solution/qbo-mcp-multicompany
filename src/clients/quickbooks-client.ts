@@ -109,7 +109,9 @@ export class QuickbooksClient {
   private static resolveRealmId(): string {
     const realmId = currentRealmId() || default_realm;
     if (!realmId) {
-      throw new Error("No QuickBooks company in context and no default realm (QBO_DEFAULT_REALM) configured.");
+      throw new Error(
+        "No company specified. Call the `list_companies` tool to see available companies, then pass `company: \"<realmId>\"` on your tool call."
+      );
     }
     return realmId;
   }

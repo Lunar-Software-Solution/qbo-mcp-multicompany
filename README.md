@@ -120,8 +120,9 @@ The server can also run as a **remote, multi-company HTTP MCP server**. One Intu
 - **One Intuit app → many companies.** Each OAuth authorization yields a distinct `realmId` + refresh token; tokens persist per-company in a data volume (`data/companies.json`).
 - **Company context via `AsyncLocalStorage`.** Every request is bound to a company; the static `QuickbooksClient.getInstance()` resolves the current realm from context and returns a per-company client from a registry — so **none of the ~90 handlers need changes**. (`src/clients/company-context.ts`, `src/clients/quickbooks-client.ts`.)
 - **Two ways to select a company** (see table above): per-connection URL, or an optional `company` argument injected into every tool by `src/helpers/register-tool.ts`.
-- **Security layers:** Cloudflare named tunnel (no inbound ports) → **Cloudflare Access** (Gmail SSO on `/admin`, **service token** on `/mcp`) → **bearer token** checked by the app.
-- **Admin UI** at `/admin` to OAuth-onboard companies, view live details, test/refresh, and disconnect.
+- **Security layers:** Cloudflare named tunnel (no inbound ports) → **Cloudflare Access** → app auth. Two front doors hit the same server: a **service-token + bearer** path for header-capable/machine clients, and a separate **Managed-OAuth hostname** so Claude Desktop / claude.ai can add it as a **one-click OAuth custom connector** (no headers — browser SSO + Dynamic Client Registration at the edge).
+- **Admin UI** at `/` (→ `/admin`, Gmail SSO) to OAuth-onboard companies, view live details, test/refresh, and disconnect.
+- **`list_companies` tool** lets a connected client enumerate the realms it can act on, then pass one as the `company` argument.
 
 ### Documentation
 
