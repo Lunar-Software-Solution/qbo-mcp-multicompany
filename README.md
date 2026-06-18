@@ -115,13 +115,27 @@ The server can also run as a **remote, multi-company HTTP MCP server**. One Intu
 - **Per-connection** — connect to `/mcp/<realmId>`; every call uses that company. (Strong isolation, natural per-company auth; N companies = N × tools in the client.)
 - **Single connection** — connect to `/mcp` (no realm) and pass an optional `company` (realm ID) **argument on each tool call**. One connection serves every company with a constant ~140 tools. The `company` field is injected centrally in `RegisterTool`, so no handler needs it; if omitted, the connection's default company is used.
 
-**See [DEPLOY.md](DEPLOY.md) for the full Docker + Cloudflare named-tunnel deployment guide.**
+### How it works (architecture)
 
-Add a connected company to an MCP client:
+- **One Intuit app → many companies.** Each OAuth authorization yields a distinct `realmId` + refresh token; tokens persist per-company in a data volume (`data/companies.json`).
+- **Company context via `AsyncLocalStorage`.** Every request is bound to a company; the static `QuickbooksClient.getInstance()` resolves the current realm from context and returns a per-company client from a registry — so **none of the ~90 handlers need changes**. (`src/clients/company-context.ts`, `src/clients/quickbooks-client.ts`.)
+- **Two ways to select a company** (see table above): per-connection URL, or an optional `company` argument injected into every tool by `src/helpers/register-tool.ts`.
+- **Security layers:** Cloudflare named tunnel (no inbound ports) → **Cloudflare Access** (Gmail SSO on `/admin`, **service token** on `/mcp`) → **bearer token** checked by the app.
+- **Admin UI** at `/admin` to OAuth-onboard companies, view live details, test/refresh, and disconnect.
+
+### Documentation
+
+| Guide | What it covers |
+|---|---|
+| **[DEPLOY.md](DEPLOY.md)** | Docker + Cloudflare named-tunnel deployment, OAuth onboarding, env vars |
+| **[docs/CONNECTING-CLIENTS.md](docs/CONNECTING-CLIENTS.md)** | Adding the server to Claude Code, Claude Desktop, Claude.ai/Cowork, OpenAI Codex, Cursor, VS Code |
+
+Quick add (Claude Code, single-connection mode — pass `company` per call):
 
 ```bash
-claude mcp add --transport http qbo-<name> \
-  https://<PUBLIC_BASE_URL>/mcp/<realmId> \
+claude mcp add --transport http qbo https://<PUBLIC_BASE_URL>/mcp \
+  --header "CF-Access-Client-Id: <CF_ACCESS_CLIENT_ID>" \
+  --header "CF-Access-Client-Secret: <CF_ACCESS_CLIENT_SECRET>" \
   --header "Authorization: Bearer <MCP_BEARER_TOKEN>"
 ```
 
